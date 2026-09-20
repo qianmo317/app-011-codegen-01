@@ -55,6 +55,9 @@ export default function BOM() {
         <Link to={`/plan/${id}/bom`} className="tab active">
           材料清单
         </Link>
+        <Link to={`/plan/${id}/ledger`} className="tab">
+          采购台账
+        </Link>
         <Link to={`/plan/${id}/print`} className="tab">
           导出打印
         </Link>

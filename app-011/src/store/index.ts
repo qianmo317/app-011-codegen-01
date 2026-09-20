@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { Plan, Room, Opening, Outlet, MatSpec } from '../types';
+import type { Plan, Room, Opening, Outlet, MatSpec, LedgerEntry, Delivery } from '../types';
 import { DEFAULT_MATS } from '../utils/materialCalc';
+import { isReceiptDup, canDeleteEntry } from '../utils/ledger';
 
 interface AppState {
   plans: Plan[];
@@ -19,6 +20,17 @@ interface AppState {
   addOutlet: (planId: string, outlet: Outlet) => void;
   deleteOutlet: (planId: string, outletId: string) => void;
   updateMaterials: (planId: string, mats: MatSpec[]) => void;
+  /** 记一笔台账；同店同小票号重复时返回错误文案，成功返回 null */
+  addLedgerEntry: (
+    planId: string,
+    entry: Omit<LedgerEntry, 'id' | 'createdAt' | 'deliveries'>
+  ) => string | null;
+  /** 同一批货分次送到：在某笔分录下挂一条送货记录 */
+  addDelivery: (planId: string, entryId: string, d: Omit<Delivery, 'id'>) => void;
+  /** 红字冲销：生成一笔数量为负的红字单把原分录抵掉 */
+  reverseLedgerEntry: (planId: string, entryId: string) => string | null;
+  /** 删除分录；已有送货/已冲销/红字单会被拦截并返回原因 */
+  deleteLedgerEntry: (planId: string, entryId: string) => string | null;
 }
 
 function genId() {
@@ -42,6 +54,7 @@ export const useStore = create<AppState>((set, get) => ({
       openings: [],
       outlets: [],
       materials: [...DEFAULT_MATS],
+      ledger: [],
     };
     set((state) => ({ plans: [...state.plans, plan], currentPlanId: id }));
     return id;
@@ -125,4 +138,90 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({
       plans: state.plans.map((p) => (p.id === planId ? { ...p, materials: mats } : p)),
     })),
+
+  addLedgerEntry: (planId, entry) => {
+    const plan = get().plans.find((p) => p.id === planId);
+    if (!plan) return '方案不存在';
+    if (isReceiptDup(plan.ledger, entry.store, entry.receiptNo)) {
+      return `「${entry.store}」的小票号「${entry.receiptNo}」已录过一笔，不能重复录入`;
+    }
+    const full: LedgerEntry = {
+      ...entry,
+      id: genId(),
+      deliveries: [],
+      createdAt: Date.now(),
+    };
+    set((state) => ({
+      plans: state.plans.map((p) =>
+        p.id === planId ? { ...p, ledger: [...p.ledger, full] } : p
+      ),
+    }));
+    return null;
+  },
+
+  addDelivery: (planId, entryId, d) =>
+    set((state) => ({
+      plans: state.plans.map((p) =>
+        p.id === planId
+          ? {
+              ...p,
+              ledger: p.ledger.map((e) =>
+                e.id === entryId
+                  ? { ...e, deliveries: [...e.deliveries, { ...d, id: genId() }] }
+                  : e
+              ),
+            }
+          : p
+      ),
+    })),
+
+  reverseLedgerEntry: (planId, entryId) => {
+    const plan = get().plans.find((p) => p.id === planId);
+    const orig = plan?.ledger.find((e) => e.id === entryId);
+    if (!plan || !orig) return '记录不存在';
+    if (orig.reversedBy) return '该笔已被红字冲销过，不能重复冲';
+    if (orig.reversesId) return '红字冲销单本身不能再冲';
+    const reversal: LedgerEntry = {
+      ...orig,
+      id: genId(),
+      quantity: -orig.quantity,
+      amount: -orig.amount,
+      deliveries: [],
+      reversesId: orig.id,
+      reversedBy: undefined,
+      createdAt: Date.now(),
+    };
+    set((state) => ({
+      plans: state.plans.map((p) =>
+        p.id === planId
+          ? {
+              ...p,
+              ledger: [
+                ...p.ledger.map((e) =>
+                  e.id === entryId ? { ...e, reversedBy: reversal.id } : e
+                ),
+                reversal,
+              ],
+            }
+          : p
+      ),
+    }));
+    return null;
+  },
+
+  deleteLedgerEntry: (planId, entryId) => {
+    const plan = get().plans.find((p) => p.id === planId);
+    const entry = plan?.ledger.find((e) => e.id === entryId);
+    if (!plan || !entry) return '记录不存在';
+    const check = canDeleteEntry(entry);
+    if (!check.ok) return check.reason!;
+    set((state) => ({
+      plans: state.plans.map((p) =>
+        p.id === planId
+          ? { ...p, ledger: p.ledger.filter((e) => e.id !== entryId) }
+          : p
+      ),
+    }));
+    return null;
+  },
 }));

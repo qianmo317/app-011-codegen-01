@@ -35,6 +35,9 @@ export default function PrintView() {
         <Link to={`/plan/${id}/bom`} className="tab">
           材料清单
         </Link>
+        <Link to={`/plan/${id}/ledger`} className="tab">
+          买料账本
+        </Link>
         <Link to={`/plan/${id}/print`} className="tab active">
           导出打印
         </Link>
